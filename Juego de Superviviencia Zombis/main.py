@@ -7,10 +7,9 @@ pygame.init()
 
 # Música de fondo
 pygame.mixer.init()
-if os.path.exists("musica_fondo.mp3"):
-    pygame.mixer.music.load("musica_fondo.mp3")
-    pygame.mixer.music.set_volume(0.5)
-    pygame.mixer.music.play(-1)
+pygame.mixer.music.load("musica_fondo.mp3")
+pygame.mixer.music.set_volume(0.5)
+pygame.mixer.music.play(-1)
 
 WIDTH, HEIGHT = 800, 600
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -32,7 +31,6 @@ font = pygame.font.SysFont(None, 24)
 font_big = pygame.font.SysFont(None, 48)
 
 player_name = "Oli"
-round_number = 1
 
 def show_menu():
     while True:
@@ -95,7 +93,7 @@ def draw_zombie(z):
     }
     color = colors.get(z['type'], RED)
     pygame.draw.rect(screen, color, (*z['pos'], z['size'], z['size']))
-    max_health = {
+    health_ratio = z['health'] / {
         'normal': 3,
         'tank': 6,
         'mutant': 10,
@@ -103,7 +101,6 @@ def draw_zombie(z):
         'brute': 5,
         'boss': 30 + 10 * round_number
     }[z['type']]
-    health_ratio = z['health'] / max_health
     pygame.draw.rect(screen, RED, (z['pos'][0], z['pos'][1] - 10, z['size'], 5))
     pygame.draw.rect(screen, GREEN, (z['pos'][0], z['pos'][1] - 10, z['size'] * health_ratio, 5))
 
@@ -125,151 +122,207 @@ def draw_round():
     screen.blit(round_text, (WIDTH - 120, 10))
 
 def main():
-    global player_health, player_max_health, score, high_score, powerups, round_number
+    global player_pos, player_speed, player_size, player_health, player_max_health
+    global bullets, bullet_speed, bullet_damage
+    global zombies, zombie_size, SPAWN_ZOMBIE, boss_exists
+    global powerups, powerup_size, powerup_duration
+    global powerup_active, powerup_timer, health_boost_active, health_boost_timer, SPAWN_POWERUP
+    global score, high_score_file, high_score
+    global round_number, zombies_killed_this_round, zombies_to_kill
+
+    player_pos = [WIDTH // 2, HEIGHT // 2]
+    player_speed = 5
+    player_size = 40
+    player_health = 100
+    player_max_health = 100
+
+    bullets = []
+    bullet_speed = 10
+    bullet_damage = 1
+
+    zombies = []
+    zombie_size = 40
+    SPAWN_ZOMBIE = pygame.USEREVENT + 1
+    pygame.time.set_timer(SPAWN_ZOMBIE, 2000)
+    boss_exists = False
+
+    powerups = []
+    powerup_size = 20
+    powerup_duration = 5000
+    powerup_active = False
+    powerup_timer = 0
+    health_boost_active = False
+    health_boost_timer = 0
+    SPAWN_POWERUP = pygame.USEREVENT + 2
+    pygame.time.set_timer(SPAWN_POWERUP, 10000)
+
+    score = 0
+    high_score_file = "highscore.txt"
+    if os.path.exists(high_score_file):
+        with open(high_score_file, "r") as f:
+            high_score = int(f.read())
+    else:
+        high_score = 0
+
+    round_number = 1
+    zombies_killed_this_round = 0
+    zombies_to_kill = 10
 
     show_menu()
 
-    player_pos = [WIDTH // 2, HEIGHT // 2]
-    bullets = []
-    zombies = []
-    powerups = []
-    spawn_timer = 0
-    bullet_timer = 0
-    score = 0
-    round_number = 1
-    player_max_health = 10
-    player_health = player_max_health
-    damage_boost = False
-    boost_timer = 0
-
-    try:
-        with open("highscore.txt", "r") as f:
-            high_score = int(f.read())
-    except:
-        high_score = 0
-
     clock = pygame.time.Clock()
     running = True
-
     while running:
-        dt = clock.tick(60) / 1000
+        clock.tick(60)
         screen.fill(WHITE)
 
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                exit()
+            elif event.type == SPAWN_ZOMBIE:
+                x = random.randint(0, WIDTH - zombie_size)
+                y = random.choice([0, HEIGHT - zombie_size])
+                z_type = random.choice(['normal', 'tank', 'mutant', 'fast', 'brute'])
+                health_map = {'normal': 3, 'tank': 6, 'mutant': 10, 'fast': 2, 'brute': 5}
+                speed_map = {'normal': 1, 'tank': 1, 'mutant': 1, 'fast': 3, 'brute': 1}
+                damage_map = {'normal': 1, 'tank': 1, 'mutant': 1, 'fast': 1, 'brute': 3}
+                size_map = {'normal': zombie_size, 'tank': zombie_size, 'mutant': zombie_size, 'fast': zombie_size, 'brute': zombie_size}
+                zombies.append({
+                    'pos': [x, y],
+                    'health': health_map[z_type],
+                    'type': z_type,
+                    'speed': speed_map[z_type],
+                    'damage': damage_map[z_type],
+                    'size': size_map[z_type]
+                })
+            elif event.type == SPAWN_POWERUP:
+                x = random.randint(0, WIDTH - powerup_size)
+                y = random.randint(0, HEIGHT - powerup_size)
+                p_type = random.choice(['damage', 'health'])
+                powerups.append((x, y, p_type))
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                mx, my = pygame.mouse.get_pos()
+                dx, dy = mx - (player_pos[0] + player_size // 2), my - (player_pos[1] + player_size // 2)
+                distance = math.hypot(dx, dy)
+                dx, dy = dx / distance, dy / distance
+                bullets.append([[player_pos[0] + player_size // 2, player_pos[1] + player_size // 2], [dx, dy]])
+
+        if powerup_active and pygame.time.get_ticks() > powerup_timer:
+            bullet_damage = 1
+            powerup_active = False
+
+        if health_boost_active and pygame.time.get_ticks() > health_boost_timer:
+            player_max_health //= 2
+            if player_health > player_max_health:
+                player_health = player_max_health
+            health_boost_active = False
+
         keys = pygame.key.get_pressed()
-        if keys[pygame.K_w]: player_pos[1] -= 200 * dt
-        if keys[pygame.K_s]: player_pos[1] += 200 * dt
-        if keys[pygame.K_a]: player_pos[0] -= 200 * dt
-        if keys[pygame.K_d]: player_pos[0] += 200 * dt
+        if keys[pygame.K_w]: player_pos[1] -= player_speed
+        if keys[pygame.K_s]: player_pos[1] += player_speed
+        if keys[pygame.K_a]: player_pos[0] -= player_speed
+        if keys[pygame.K_d]: player_pos[0] += player_speed
 
-        if keys[pygame.K_SPACE] and bullet_timer <= 0:
-            bullets.append(player_pos[:])
-            bullet_timer = 0.2
+        for bullet in bullets[:]:
+            bullet[0][0] += bullet[1][0] * bullet_speed
+            bullet[0][1] += bullet[1][1] * bullet_speed
+            if bullet[0][0] < 0 or bullet[0][0] > WIDTH or bullet[0][1] < 0 or bullet[0][1] > HEIGHT:
+                bullets.remove(bullet)
 
-        bullet_timer -= dt
-
-        for b in bullets:
-            b[1] -= 300 * dt
-
-        bullets = [b for b in bullets if b[1] > 0]
-
-        spawn_timer += dt
-        if spawn_timer > 1.5:
-            spawn_timer = 0
-            zombie_type = random.choices(
-                ['normal', 'tank', 'mutant', 'fast', 'brute'],
-                weights=[50, 20, 10, 15, 5],
-                k=1
-            )[0]
-            if round_number % 5 == 0:
-                zombie_type = 'boss'
-            size = 40 if zombie_type != 'boss' else 80
-            health = {
-                'normal': 3,
-                'tank': 6,
-                'mutant': 10,
-                'fast': 2,
-                'brute': 5,
-                'boss': 30 + 10 * round_number
-            }[zombie_type]
-            speed = {
-                'normal': 60,
-                'tank': 40,
-                'mutant': 80,
-                'fast': 120,
-                'brute': 70,
-                'boss': 50
-            }[zombie_type]
-            zombies.append({
-                'pos': [random.randint(0, WIDTH - size), -size],
-                'type': zombie_type,
-                'health': health,
-                'speed': speed,
-                'size': size
-            })
-
-        for z in zombies:
-            dx = player_pos[0] - z['pos'][0]
-            dy = player_pos[1] - z['pos'][1]
+        for zombie in zombies[:]:
+            dx = player_pos[0] - zombie['pos'][0]
+            dy = player_pos[1] - zombie['pos'][1]
             dist = math.hypot(dx, dy)
-            if dist > 0:
-                z['pos'][0] += z['speed'] * dt * dx / dist
-                z['pos'][1] += z['speed'] * dt * dy / dist
+            if dist != 0:
+                zombie['pos'][0] += zombie['speed'] * dx / dist
+                zombie['pos'][1] += zombie['speed'] * dy / dist
 
-        for z in zombies:
-            for b in bullets:
-                if (z['pos'][0] < b[0] < z['pos'][0] + z['size'] and
-                    z['pos'][1] < b[1] < z['pos'][1] + z['size']):
-                    z['health'] -= 2 if damage_boost else 1
-                    bullets.remove(b)
+            if zombie['type'] == 'boss' and pygame.time.get_ticks() > zombie.get('spawn_timer', 0):
+                for _ in range(3):
+                    zombie['minions'] = [m for m in zombie.get('minions', []) if m in zombies]
+                    zx = zombie['pos'][0] + random.randint(-30, 30)
+                    zy = zombie['pos'][1] + random.randint(-30, 30)
+                    zx = max(0, min(WIDTH - zombie_size, zx))
+                    zy = max(0, min(HEIGHT - zombie_size, zy))
+                    zombies.append({
+                        'pos': [zx, zy],
+                        'health': 2,
+                        'type': 'normal',
+                        'speed': 1,
+                        'damage': 1,
+                        'size': zombie_size
+                    })
+                zombie['spawn_timer'] = pygame.time.get_ticks() + 3000
+
+            if pygame.Rect(*player_pos, player_size, player_size).colliderect(pygame.Rect(*zombie['pos'], zombie['size'], zombie['size'])):
+                player_health -= zombie['damage']
+                if player_health <= 0:
+                    running = False
                     break
 
-        zombies = [z for z in zombies if z['health'] > 0]
+            for bullet in bullets[:]:
+                if pygame.Rect(*bullet[0], 5, 5).colliderect(pygame.Rect(*zombie['pos'], zombie['size'], zombie['size'])):
+                    zombie['health'] -= bullet_damage
+                    bullets.remove(bullet)
+                    if zombie['health'] <= 0:
+                        if zombie['type'] == 'boss':
+                            boss_exists = False
+                        zombies.remove(zombie)
+                        score += 1
+                        zombies_killed_this_round += 1
 
-        for z in zombies:
-            zx, zy = z['pos']
-            px, py = player_pos
-            if abs(zx - px) < 30 and abs(zy - py) < 30:
-                player_health -= 0.5 * dt
+                        if score > high_score:
+                            high_score = score
+                            with open(high_score_file, "w") as f:
+                                f.write(str(high_score))
 
-        if player_health <= 0:
-            if score > high_score:
-                with open("highscore.txt", "w") as f:
-                    f.write(str(score))
-            if show_game_over():
-                main()
-                return
+                        if zombies_killed_this_round >= zombies_to_kill and not boss_exists:
+                            round_number += 1
+                            zombies_killed_this_round = 0
+                            zombies_to_kill += 5
+                            x = random.randint(0, WIDTH - 80)
+                            y = random.choice([0, HEIGHT - 80])
+                            zombies.append({
+                                'pos': [x, y],
+                                'health': 30 + 10 * round_number,
+                                'type': 'boss',
+                                'speed': 0.5,
+                                'damage': 4,
+                                'size': 80,
+                                'spawn_timer': pygame.time.get_ticks() + 3000,
+                                'minions': []  # 👈 Nueva lista para rastrear minions
+                            })
+                            boss_exists = True
+                    break
 
-        if random.random() < 0.001:
-            powerups.append((random.randint(0, WIDTH - 20), random.randint(0, HEIGHT - 20), random.choice(['damage', 'health'])))
-
-        for i, (x, y, t) in enumerate(powerups):
-            if abs(x - player_pos[0]) < 40 and abs(y - player_pos[1]) < 40:
-                if t == 'damage':
-                    damage_boost = True
-                    boost_timer = 5
-                elif t == 'health':
-                    player_health = min(player_max_health, player_health + 3)
-                del powerups[i]
-                break
-
-        if damage_boost:
-            boost_timer -= dt
-            if boost_timer <= 0:
-                damage_boost = False
-
-        score += dt
-        if int(score) // 20 + 1 > round_number:
-            round_number += 1
+        for powerup in powerups[:]:
+            if pygame.Rect(*player_pos, player_size, player_size).colliderect(pygame.Rect(powerup[0], powerup[1], powerup_size, powerup_size)):
+                if powerup[2] == 'damage':
+                    bullet_damage = 2
+                    powerup_active = True
+                    powerup_timer = pygame.time.get_ticks() + powerup_duration
+                elif powerup[2] == 'health':
+                    player_max_health *= 2
+                    player_health = player_max_health
+                    health_boost_active = True
+                    health_boost_timer = pygame.time.get_ticks() + 10000
+                powerups.remove(powerup)
 
         draw_player(player_pos)
-        for b in bullets: draw_bullet(b)
-        for z in zombies: draw_zombie(z)
+        for bullet in bullets:
+            draw_bullet([int(bullet[0][0]), int(bullet[0][1])])
+        for zombie in zombies:
+            draw_zombie(zombie)
         draw_powerups()
         draw_health_bar()
         draw_score()
         draw_round()
-
         pygame.display.flip()
+
+    if not running:
+        if show_game_over():
+            main()
 
 if __name__ == "__main__":
     main()
